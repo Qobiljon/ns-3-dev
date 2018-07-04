@@ -54,8 +54,8 @@ namespace ns3 {
     public:
         // <editor-fold desc="LVAP">
         static bool lvap_mode; // whether app should work with lvaps or in normal mode
-        static std::map<Mac48Address, ApWifiMac*> ap_objects; // all created ap objects
-        static std::map<Mac48Address, ApWifiMac*> sta_ap_glb_map; // complete map of stations with aps
+        static std::map<Mac48Address, Ptr<ApWifiMac>> ap_objects; // all created ap objects
+        static std::map<Mac48Address, Ptr<ApWifiMac>> sta_ap_glb_map; // complete map of stations with aps
         static std::map<Mac48Address, bool> generated_macs; // all generated macs map, format: mac address, is-associated
         std::map<Mac48Address, Mac48Address> sta_lvap_map; // lvap map with sta devices for each ap
         

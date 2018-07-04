@@ -38,8 +38,8 @@ namespace ns3 {
     // <editor-fold desc="LVAP">
     bool ApWifiMac::lvap_mode = true;
     
-    std::map<Mac48Address, ApWifiMac*> ApWifiMac::ap_objects;
-    std::map<Mac48Address, ApWifiMac*> ApWifiMac::sta_ap_glb_map;
+    std::map<Mac48Address, Ptr<ApWifiMac>> ApWifiMac::ap_objects;
+    std::map<Mac48Address, Ptr<ApWifiMac>> ApWifiMac::sta_ap_glb_map;
     std::map<Mac48Address, bool> ApWifiMac::generated_macs;
     
     Mac48Address ApWifiMac::GenerateLvap (){
@@ -97,7 +97,7 @@ namespace ns3 {
         
         sta_lvap_map[sta_addr] = lvap_state.lvapAddress;
         //lvap_sta_map[lvap_state.lvapAddress] = sta_addr;
-        sta_ap_glb_map[sta_addr] = this;
+        sta_ap_glb_map[sta_addr] = Ptr<ApWifiMac>(this);
         
         if(lvap_state.channelNumber != m_phy->GetChannelNumber()){
             // send channel switch announcement
@@ -264,7 +264,7 @@ namespace ns3 {
         
         // <editor-fold desc="LVAP">
         my_addr = address;
-        ap_objects[address] = this;
+        ap_objects[address] = Ptr<ApWifiMac>(this);
         // </editor-fold>
     }
     
@@ -867,7 +867,7 @@ namespace ns3 {
             Mac48Address lvap_mac;
             
             if(sta_ap_glb_map.find(to) != sta_ap_glb_map.end())
-                if(sta_ap_glb_map[to] == this)
+                if(sta_ap_glb_map[to] == Ptr<ApWifiMac>(this))
                     lvap_mac = sta_lvap_map[to];
                 else return;
             else {
@@ -875,7 +875,7 @@ namespace ns3 {
                 sta_lvap_map[to] = lvap_mac;
             }
             //lvap_sta_map[*lvap_mac] = to;
-            std::cout << "TRIAL LVAP(" << sta_lvap_map[to] << ") WITH STA(" << to << ") BY AP(" << my_addr << ')' << std::endl;
+            //std::cout << "TRIAL LVAP(" << sta_lvap_map[to] << ") WITH STA(" << to << ") BY AP(" << my_addr << ')' << std::endl;
             
             hdr.SetAddr2 (lvap_mac);
             hdr.SetAddr3 (lvap_mac);
@@ -947,7 +947,7 @@ namespace ns3 {
             hdr.SetAddr2 (lvap_mac);
             hdr.SetAddr3 (lvap_mac);
             
-            sta_ap_glb_map[to] = this;
+            sta_ap_glb_map[to] = Ptr<ApWifiMac>(this);
             std::cout << "MATCH LVAP(" << sta_lvap_map[to] << ") WITH STA(" << to << ") BY AP(" << my_addr << ')' << std::endl;
             
             // erase from other aps (TODO: change to deleteing by sending data packet to server)

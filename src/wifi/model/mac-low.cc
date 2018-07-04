@@ -451,7 +451,7 @@ namespace ns3 {
         bool isPrevNavZero = IsNavZero ();
         NS_LOG_DEBUG ("duration/id=" << hdr.GetDuration ());
         NotifyNav (packet, hdr);
-        ApWifiMac* ap = ApWifiMac::ap_objects.find(m_self)->second;
+        Ptr<ApWifiMac> ap = ApWifiMac::ap_objects[m_self];
         if(hdr.IsAck()){
             for(std::map<Mac48Address, Mac48Address>::iterator iter = ap->sta_lvap_map.begin(); iter != ap->sta_lvap_map.end(); iter++)
                 if(hdr.GetAddr1() == iter->second)

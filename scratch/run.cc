@@ -19,16 +19,101 @@
 #include <stdint.h>
 #include <sstream>
 #include <fstream>
+#include <cmath>
 using namespace ns3;
 
+static Ptr<CsmaNetDevice> centralController;
+std::vector<Ipv4InterfaceContainer> staInterfaces_tcp, staInterfaces_udp, apInterfaces;
+
+void SendCsmaData(Ptr<CsmaNetDevice> src_dev, Mac48Address dest_addr){
+    Mac48Address src_addr = Mac48Address::ConvertFrom(src_dev->GetAddress());
+    
+    uint8_t *raw = LvapAction::GenerateActionMessage(LvapAction::ACTION_GET_LVAP_STATE, src_addr, 2, true, false, Mac48Address("01:02:03:04:05:06"));
+    Ptr<Packet> packet = Create<Packet>(raw, LvapAction::RAW_LENGTH);
+    
+    src_dev->Send(packet, dest_addr, Ipv4L3Protocol::PROT_NUMBER);
+    
+    std::cout << "DATA SENT: FROM " <<  src_addr << " TO " << dest_addr << std::endl;
+}
+static void HandOverLvap(Mac48Address sta_addr, Mac48Address dest_ap){
+    std::cout << "-*-*- HANDOFF STARTS STA: " << sta_addr << std::endl;
+    
+    //    Ptr<ApWifiMac> to_ap = ApWifiMac::ap_objects[dest_ap];
+    //    Ptr<ApWifiMac> from_ap = ApWifiMac::sta_ap_glb_map[sta_addr];
+    //    
+    //    if(from_ap == to_ap){
+    //        std::cout << "-*-*- HANDOFF ABORTED" << std::endl;
+    //        return;
+    //    }
+    //    
+    //    LvapState lvap_state = from_ap->extract_lvap_state(sta_addr);
+    //    
+    //    printf("DETACHING LVAP FROM CURRENT AP\n");
+    //    from_ap->detach_sta_from_ap(sta_addr);
+    //    printf("ATTACHING LVAP TO DIFFERENT AP\n");
+    //    to_ap->attach_lvap_to_ap(sta_addr, lvap_state);
+    //    
+    //    std::cout << Mac48Address::ConvertFrom(staInterfaces_tcp.at(0).Get(0).first->GetNetDevice(1)->GetAddress()) << std::endl;
+    
+    std::cout << "-*-*- HANDOFF COMPLETED" << std::endl;
+}
+
+class LvapTable{
+    struct Row{
+        Mac48Address sta_mac;
+        Mac48Address lvap_mac;
+        Mac48Address ap_mac;
+        Node sta_node;
+        Node ap_node;
+        int32_t rssi;
+    };
+public:
+    LvapTable(){}
+    void addRow(Row row){
+        rows.push_back(row);
+    }
+    static void addApNodes(const NodeContainer ap_nodes){
+        for(NodeContainer::Iterator iter = ap_nodes.Begin(); iter != ap_nodes.End(); iter++){
+            apNodes.push_back(**iter);
+        }
+    }
+    Ptr<Node> needsHandoff(std::vector<Row>::iterator elem){
+        if(elem->rssi < -70){
+            Vector staPos = elem->sta_node.GetObject<MobilityModel>()->GetPosition();
+            Vector oldApPos = elem->ap_node.GetObject<MobilityModel>()->GetPosition();
+            uint32_t origDist = std::sqrt(std::pow(staPos.x - oldApPos.x, 2) + std::pow(staPos.y - oldApPos.y, 2) + std::pow(staPos.z - oldApPos.z, 2));
+            
+            for(std::vector<Node>::iterator apIter = apNodes.begin(); apIter != apNodes.end(); apIter++){
+                if(apIter->GetId() == elem->ap_node.GetId())
+                    continue;
+                
+                Vector apPos = apIter->GetObject<MobilityModel>()->GetPosition();
+                uint32_t compDist = std::sqrt(std::pow(staPos.x - apPos.x, 2) + std::pow(staPos.y - apPos.y, 2) + std::pow(staPos.z - apPos.z, 2));
+                if(compDist < origDist)
+                    return Ptr<Node>(&*apIter);
+            }
+            return nullptr;
+        }
+        return nullptr;
+    }
+    void balance(){
+        for(std::vector<Row>::iterator iter = rows.begin(); iter != rows.end(); iter++){
+            Ptr<Node> toAp = needsHandoff(iter);
+            if(toAp != nullptr)
+                SendCsmaData(centralController, Mac48Address::ConvertFrom(toAp->GetDevice(0)->GetAddress()));
+        }
+    }
+private:
+    std::vector<Row> rows;
+    static std::vector<Node> apNodes;
+};
 
 // <editor-fold desc="Variables">
 static long rxSize = 0;
 std::ofstream outFile("out1.stat");
 double t1 = 0, t2 = 0, t3 = 0, t4 = 0;
-static Ptr<CsmaNetDevice> centralController;
+LvapTable table;
 // </editor-fold>
-
 
 class MyApp : public Application {
 public:
@@ -44,7 +129,7 @@ public:
         m_packetSize = packetSize;
         m_nPackets = nPackets;
         m_dataRate = dataRate;
-        m_wNet	=	wifinet;
+        m_wNet = wifinet;
         m_index = index;
         m_node = node;
     }
@@ -99,18 +184,20 @@ private:
         m_packetsSent=0;
     }
     
-    Ptr<Socket>     m_socket;
-    Address         m_peer;
-    uint32_t        m_packetSize;
-    uint32_t        m_nPackets;
-    DataRate        m_dataRate;
-    EventId         m_sendEvent;
-    bool            m_running;
-    uint32_t        m_packetsSent;
-    Ptr<WifiNetDevice>  m_wNet;
-    Ptr<Node>		  m_node;
+    Ptr<Socket> m_socket;
+    Address m_peer;
+    uint32_t m_packetSize;
+    uint32_t m_nPackets;
+    DataRate m_dataRate;
+    EventId m_sendEvent;
+    bool m_running;
+    uint32_t m_packetsSent;
+    Ptr<WifiNetDevice> m_wNet;
+    Ptr<Node> m_node;
     int m_index;
 };
+
+// <editor-fold desc="Utility Functions">
 static void SetPosition (Ptr<Node> node, Vector position) {
     Ptr<MobilityModel> mobility = node->GetObject<MobilityModel> ();
     mobility->SetPosition (position);
@@ -151,37 +238,9 @@ static void ThroughputMonitor (FlowMonitorHelper* fmhelper, Ptr<FlowMonitor> flo
 }
 void PhyRxOkTrace (std::string context, Ptr<const Packet> packet, double snr, WifiMode mode, enum WifiPreamble preamble) {
     rxSize += packet->GetSize();
+    std::cout << *packet << std::endl;
 }
-static void SendCsmaData(Ptr<CsmaNetDevice> src_dev, Mac48Address dest_addr){
-    Mac48Address src_addr = Mac48Address::ConvertFrom(src_dev->GetAddress());
-    
-    uint8_t *raw = LvapAction::GenerateActionMessage(LvapAction::ACTION_GET_LVAP_STATE, src_addr, 2, true, false, Mac48Address("01:02:03:04:05:06"));
-    Ptr<Packet> packet = Create<Packet>(raw, LvapAction::RAW_LENGTH);
-    
-    src_dev->Send(packet, dest_addr, Ipv4L3Protocol::PROT_NUMBER);
-    
-    std::cout << "DATA SENT: FROM " <<  src_addr << " TO " << dest_addr << std::endl;
-}
-static void HandOverLvap(Mac48Address sta_addr, Mac48Address dest_ap){
-    std::cout << "-*-*- HANDOFF STARTS STA: " << sta_addr << std::endl;
-    
-    Ptr<ApWifiMac> to_ap = ApWifiMac::ap_objects[dest_ap];
-    Ptr<ApWifiMac> from_ap = ApWifiMac::sta_ap_glb_map[sta_addr];
-    
-    if(from_ap == to_ap){
-        std::cout << "-*-*- HANDOFF ABORTED" << std::endl;
-        return;
-    }
-    
-    LvapState lvap_state = from_ap->extract_lvap_state(sta_addr);
-    
-    printf("DETACHING LVAP FROM CURRENT AP\n");
-    from_ap->detach_sta_from_ap(sta_addr);
-    printf("ATTACHING LVAP TO DIFFERENT AP\n");
-    to_ap->attach_lvap_to_ap(sta_addr, lvap_state);
-    
-    std::cout << "-*-*- HANDOFF COMPLETED" << std::endl;
-}
+// </editor-fold>
 
 int main () {
     ApWifiMac::lvap_mode = true;
@@ -205,12 +264,9 @@ int main () {
     servNodes.Create(nServ);
     switchNodes.Add(switchNode);
     
-    NetDeviceContainer *csmaDevices = new NetDeviceContainer[nAps+nServ];
+    NetDeviceContainer* csmaDevices = new NetDeviceContainer[nAps+nServ];
     std::vector<NetDeviceContainer> staDevices;
     std::vector<NetDeviceContainer> apDevices;
-    std::vector<Ipv4InterfaceContainer> staInterfaces_tcp;
-    std::vector<Ipv4InterfaceContainer> staInterfaces_udp;
-    std::vector<Ipv4InterfaceContainer> apInterfaces;
     
     InternetStackHelper stack;
     
@@ -224,7 +280,6 @@ int main () {
     stack.Install(staUdpNodes);
     stack.Install(staTcpNodes);
     stack.Install(servNodes);
-    
     
     Ipv4GlobalRoutingHelper::PopulateRoutingTables();
     csmaAS.SetChannelAttribute("DataRate", StringValue("200Mbps"));
@@ -260,7 +315,6 @@ int main () {
     NetDeviceContainer apDev;
     Ipv4InterfaceContainer staInterface;
     Ipv4InterfaceContainer apInterface;
-    MobilityHelper mobility;
     BridgeHelper bridge;
     WifiHelper wifi;
     WifiMacHelper wifiMac;
@@ -369,12 +423,10 @@ int main () {
     Config::Connect ("/NodeList/5/DeviceList/*/Phy/State/RxOk", MakeCallback (&PhyRxOkTrace));
     
     FlowMonitorHelper flowmon;
-    Ptr<FlowMonitor> monitor = flowmon.InstallAll ();
+    Ptr<FlowMonitor> monitor = flowmon.InstallAll();
     
     ThroughputMonitor(&flowmon, monitor);
     Simulator::Schedule (Seconds (1.0), &HandOverLvap, Mac48Address::ConvertFrom(staDevices.at(0).Get(0)->GetAddress()), Mac48Address::ConvertFrom(apDevices.at(1).Get(0)->GetAddress()));
-    Simulator::Schedule (Seconds (1.0), &HandOverLvap, Mac48Address::ConvertFrom(staDevices.at(1).Get(0)->GetAddress()), Mac48Address::ConvertFrom(apDevices.at(1).Get(0)->GetAddress()));
-    Simulator::Schedule (Seconds (simulateTime / 2 + 1), &SendCsmaData, centralController, Mac48Address::ConvertFrom(apDevices.at(0).Get(0)->GetAddress()));
     Simulator::Stop (Seconds (simulateTime));
     Simulator::Run ();
     Simulator::Destroy ();

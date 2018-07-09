@@ -1039,6 +1039,8 @@ namespace ns3 {
         //use the DCF for these regardless of whether we have a QoS
         //association or not.
         m_dca->Queue (packet, hdr);
+        
+        // 
     }
     
     // <editor-fold desc="LVAP">

@@ -13,6 +13,8 @@
 #include "ns3/flow-monitor-module.h"
 #include "ns3/netanim-module.h"
 #include "src/wifi/model/ap-wifi-mac.h"
+#include "src/core/model/object.h"
+#include "src/network/model/node.h"
 
 
 #include <vector>
@@ -22,189 +24,72 @@
 #include <cmath>
 using namespace ns3;
 
-static Ptr<CsmaNetDevice> centralController;
-std::vector<Ipv4InterfaceContainer> staInterfaces_tcp, staInterfaces_udp, apInterfaces;
-
-void SendCsmaData(Ptr<CsmaNetDevice> src_dev, Mac48Address dest_addr){
-    Mac48Address src_addr = Mac48Address::ConvertFrom(src_dev->GetAddress());
-    
-    uint8_t *raw = LvapAction::GenerateActionMessage(LvapAction::ACTION_GET_LVAP_STATE, src_addr, 2, true, false, Mac48Address("01:02:03:04:05:06"));
-    Ptr<Packet> packet = Create<Packet>(raw, LvapAction::RAW_LENGTH);
-    
-    src_dev->Send(packet, dest_addr, Ipv4L3Protocol::PROT_NUMBER);
-    
-    std::cout << "DATA SENT: FROM " <<  src_addr << " TO " << dest_addr << std::endl;
-}
-static void HandOverLvap(Mac48Address sta_addr, Mac48Address dest_ap){
-    std::cout << "-*-*- HANDOFF STARTS STA: " << sta_addr << std::endl;
-    
-    //    Ptr<ApWifiMac> to_ap = ApWifiMac::ap_objects[dest_ap];
-    //    Ptr<ApWifiMac> from_ap = ApWifiMac::sta_ap_glb_map[sta_addr];
-    //    
-    //    if(from_ap == to_ap){
-    //        std::cout << "-*-*- HANDOFF ABORTED" << std::endl;
-    //        return;
-    //    }
-    //    
-    //    LvapState lvap_state = from_ap->extract_lvap_state(sta_addr);
-    //    
-    //    printf("DETACHING LVAP FROM CURRENT AP\n");
-    //    from_ap->detach_sta_from_ap(sta_addr);
-    //    printf("ATTACHING LVAP TO DIFFERENT AP\n");
-    //    to_ap->attach_lvap_to_ap(sta_addr, lvap_state);
-    //    
-    //    std::cout << Mac48Address::ConvertFrom(staInterfaces_tcp.at(0).Get(0).first->GetNetDevice(1)->GetAddress()) << std::endl;
-    
-    std::cout << "-*-*- HANDOFF COMPLETED" << std::endl;
-}
-
-class LvapTable{
-    struct Row{
-        Mac48Address sta_mac;
-        Mac48Address lvap_mac;
-        Mac48Address ap_mac;
-        Node sta_node;
-        Node ap_node;
-        int32_t rssi;
-    };
-public:
-    LvapTable(){}
-    void addRow(Row row){
-        rows.push_back(row);
-    }
-    static void addApNodes(const NodeContainer ap_nodes){
-        for(NodeContainer::Iterator iter = ap_nodes.Begin(); iter != ap_nodes.End(); iter++){
-            apNodes.push_back(**iter);
-        }
-    }
-    Ptr<Node> needsHandoff(std::vector<Row>::iterator elem){
-        if(elem->rssi < -70){
-            Vector staPos = elem->sta_node.GetObject<MobilityModel>()->GetPosition();
-            Vector oldApPos = elem->ap_node.GetObject<MobilityModel>()->GetPosition();
-            uint32_t origDist = std::sqrt(std::pow(staPos.x - oldApPos.x, 2) + std::pow(staPos.y - oldApPos.y, 2) + std::pow(staPos.z - oldApPos.z, 2));
-            
-            for(std::vector<Node>::iterator apIter = apNodes.begin(); apIter != apNodes.end(); apIter++){
-                if(apIter->GetId() == elem->ap_node.GetId())
-                    continue;
-                
-                Vector apPos = apIter->GetObject<MobilityModel>()->GetPosition();
-                uint32_t compDist = std::sqrt(std::pow(staPos.x - apPos.x, 2) + std::pow(staPos.y - apPos.y, 2) + std::pow(staPos.z - apPos.z, 2));
-                if(compDist < origDist)
-                    return Ptr<Node>(&*apIter);
-            }
-            return nullptr;
-        }
-        return nullptr;
-    }
-    void balance(){
-        for(std::vector<Row>::iterator iter = rows.begin(); iter != rows.end(); iter++){
-            Ptr<Node> toAp = needsHandoff(iter);
-            if(toAp != nullptr)
-                SendCsmaData(centralController, Mac48Address::ConvertFrom(toAp->GetDevice(0)->GetAddress()));
-        }
-    }
-private:
-    std::vector<Row> rows;
-    static std::vector<Node> apNodes;
-};
-
 // <editor-fold desc="Variables">
-static long rxSize = 0;
-std::ofstream outFile("out1.stat");
-double t1 = 0, t2 = 0, t3 = 0, t4 = 0;
-LvapTable table;
+static std::ofstream logFile("log.csv");
+static double t1 = 0, t2 = 0, t3 = 0, t4 = 0;
+static Ipv4InterfaceContainer serverInterface;
 // </editor-fold>
 
-class MyApp : public Application {
-public:
-    MyApp (): m_socket (0), m_peer (), m_packetSize (0), m_nPackets (0), m_dataRate (0), m_sendEvent (), m_running (false), m_packetsSent (0) {
-        
-    }
-    virtual ~MyApp() {
-        m_socket = 0;
-    }
-    void Setup (Ptr<Socket> socket, Address address, uint32_t packetSize, uint32_t nPackets, DataRate dataRate,Ptr<WifiNetDevice> wifinet, int index,Ptr<Node> node) {
-        m_socket = socket;
-        m_peer = address;
-        m_packetSize = packetSize;
-        m_nPackets = nPackets;
-        m_dataRate = dataRate;
-        m_wNet = wifinet;
-        m_index = index;
-        m_node = node;
+static void Handoff(uint32_t staNodeId, uint32_t destApNodeId){
+    //logFile << "HANDOFF STARTED" << std::endl;
+    std::cout << "-*-*- HANDOFF STARTED -*-*-" << std::endl;
+    
+    if(!ApWifiMac::lvap_mode){
+        std::cout << "-*-*- HANDOFF ABORTED, LVAP TURNED OFF" << std::endl;
+        logFile << "HANDOFF ABORTED" << std::endl;
+        return;
     }
     
-    int count = 0;
-private:
-    virtual void StartApplication () {
-        m_running = true;
-        m_packetsSent = 0;
-        m_socket->Bind ();
-        m_socket->Connect (m_peer);
-        FlowControl ();
-    }
-    virtual void StopApplication () {
-        m_running = false;   
-        if (m_sendEvent.IsRunning ())
-            Simulator::Cancel (m_sendEvent);
-        if (m_socket)
-            m_socket->Close ();
-    }
-    void ScheduleTx () {
-        if (m_running)
-            m_sendEvent = Simulator::Schedule (Seconds (m_packetSize * 8 / static_cast<double> (m_dataRate.GetBitRate ())), &MyApp::SendPacket, this);
-    }
-    void SendPacket () {
-        if(m_running)
-            m_socket->Send (Create<Packet> (m_packetSize));
-        if (++m_packetsSent < m_nPackets)
-            ScheduleTx ();
-        else return;
-    }
-    void FlowControl() {
-        if(m_index % 2 == 0) {
-            Simulator::Schedule(Seconds(0.0), &MyApp::StartPacketSend,this);
-            if(count == 1 && m_index == 0){
-                Simulator::Schedule(Seconds(0.1),&MyApp::StopPacketSend,this);
-                // TODO: Switch Channel
-                Simulator::Schedule(Seconds(0.16),&MyApp::StartPacketSend,this);
-            }
-            Simulator::Schedule(Seconds(3.0),&MyApp::StopPacketSend,this);
-            Simulator::Schedule(Seconds(4.0),&MyApp::FlowControl,this);   
-        }
-        count++;
-        std::cout << "STA: " << m_index << "\t Channel: " << (int)(m_wNet->GetPhy()->GetChannelNumber()) << std::endl;
-    }
-    void StartPacketSend() {
-        m_running=true;
-        ScheduleTx();
-    }
-    void StopPacketSend() {
-        m_running=false;
-        m_packetsSent=0;
+    Ptr<Node> staNode = NodeList::GetNode(staNodeId);
+    Ptr<Node> apNode = NodeList::GetNode(destApNodeId);
+    
+    Ptr<WifiNetDevice> apNetDevice = DynamicCast<WifiNetDevice>(apNode->GetDevice(2));
+    Ptr<WifiNetDevice> staNetDevice = DynamicCast<WifiNetDevice>(staNode->GetDevice(1));
+    
+    Mac48Address destApMacAddr = Mac48Address::ConvertFrom(apNetDevice->GetAddress());
+    Mac48Address staMacAddr = Mac48Address::ConvertFrom(staNetDevice->GetAddress());
+    
+    Ptr<ApWifiMac> to_ap = ApWifiMac::ap_objects[destApMacAddr];
+    Ptr<ApWifiMac> from_ap = ApWifiMac::sta_ap_glb_map[staMacAddr];
+    
+    if(from_ap == to_ap){
+        std::cout << "-*-*- HANDOFF ABORTED, AP WASN'T CHANGED" << std::endl;
+        //logFile << "HANDOFF ABORTED" << std::endl;
+        return;
     }
     
-    Ptr<Socket> m_socket;
-    Address m_peer;
-    uint32_t m_packetSize;
-    uint32_t m_nPackets;
-    DataRate m_dataRate;
-    EventId m_sendEvent;
-    bool m_running;
-    uint32_t m_packetsSent;
-    Ptr<WifiNetDevice> m_wNet;
-    Ptr<Node> m_node;
-    int m_index;
-};
+    //printf("DETACHING LVAP FROM CURRENT AP\n");
+    LvapState* lvap_state = from_ap->detach_sta_from_ap(staMacAddr);
+    
+    Ptr<WifiPhy> apPhy = apNetDevice->GetPhy();
+    Ptr<WifiPhy> staPhy = staNetDevice->GetPhy();
+    //int fromChannel = (int)(staPhy->GetChannelNumber());
+    staPhy->SetChannelNumber(apPhy->GetChannelNumber());
+    //std::cout << "CHANNEL STA CHANGED FROM: " << fromChannel << " TO: " << (int)(apPhy->GetChannelNumber()) << std::endl;
+    
+    to_ap->attach_lvap_to_ap(staMacAddr, lvap_state);
+    
+    Ptr<ArpL3Protocol> arpL3Prot = staNode->GetObject<ArpL3Protocol>();
+    Ptr<ArpCache> arpCache = arpL3Prot->FindCache(staNetDevice);
+    
+    //std::cout << "SENDING ARP REQUEST NOW " << arpL3Prot << ' ' << arpCache << ' ' << serverInterface.GetAddress(0) << std::endl;
+    Simulator::Schedule (Time (MilliSeconds (arpL3Prot->m_requestJitter->GetValue ())), &ArpL3Protocol::SendArpRequest, arpL3Prot, arpCache, serverInterface.GetAddress(0));
+    
+    ApWifiMac::handedOver = true;
+    
+    //std::cout << "STA: " << staMacAddr << " AP:" << destApMacAddr << std::endl;
+    std::cout << "-*-*- HANDOFF COMPLETED -*-*-" << std::endl;
+    //logFile << "HANDOFF FINISHED" << std::endl;
+}
 
-// <editor-fold desc="Utility Functions">
 static void SetPosition (Ptr<Node> node, Vector position) {
     Ptr<MobilityModel> mobility = node->GetObject<MobilityModel> ();
     mobility->SetPosition (position);
 }
+
 static void ThroughputMonitor (FlowMonitorHelper* fmhelper, Ptr<FlowMonitor> flowMon) {
     std::map<FlowId, FlowMonitor::FlowStats> flowStats = flowMon->GetFlowStats();
-    Ptr<Ipv4FlowClassifier> classing = DynamicCast<Ipv4FlowClassifier> (fmhelper->GetClassifier());
+    //Ptr<Ipv4FlowClassifier> classing = DynamicCast<Ipv4FlowClassifier> (fmhelper->GetClassifier());
     double lt1 = 0;
     double lt2 = 0;
     double lt3 = 0;
@@ -233,38 +118,29 @@ static void ThroughputMonitor (FlowMonitorHelper* fmhelper, Ptr<FlowMonitor> flo
         }
     }
     
-    outFile << (double)Simulator::Now().GetSeconds() << ' ' << (double)lt1 << ' ' << (double)lt2 << ' ' << (double)lt3 << ' ' << (double)lt4 << std::endl;
+    logFile << (double)Simulator::Now().GetSeconds() << '\t' << (double)lt1 << '\t' << (double)lt2 << '\t' << (double)lt3 << '\t' << (double)lt4 << std::endl;
     Simulator::Schedule(Seconds(0.1),&ThroughputMonitor, fmhelper, flowMon);   
 }
-void PhyRxOkTrace (std::string context, Ptr<const Packet> packet, double snr, WifiMode mode, enum WifiPreamble preamble) {
-    rxSize += packet->GetSize();
-    std::cout << *packet << std::endl;
-}
-// </editor-fold>
 
 int main () {
     ApWifiMac::lvap_mode = true;
     
     uint32_t payloadSize = 1472;
-    double simulateTime = 10.0;
+    double simulateTime = 4.0;
     AsciiTraceHelper trace;
     uint32_t nAps = 2;
-    uint32_t nStas_udp = 0;
-    uint32_t nStas_tcp = 4;
+    uint32_t nStas = 2;
     uint32_t nServ = 1;
     NodeContainer apNodes;
-    NodeContainer staUdpNodes;
-    NodeContainer staTcpNodes;
-    NodeContainer servNodes;
+    NodeContainer staNodes;
+    Ptr<Node> servNode = CreateObject<Node>();
     NodeContainer switchNodes;
     Ptr<Node> switchNode = CreateObject<Node>();
     apNodes.Create(nAps);
-    staUdpNodes.Create(nStas_udp);
-    staTcpNodes.Create(nStas_tcp);
-    servNodes.Create(nServ);
+    staNodes.Create(nStas);
     switchNodes.Add(switchNode);
     
-    NetDeviceContainer* csmaDevices = new NetDeviceContainer[nAps+nServ];
+    NetDeviceContainer* csmaDevices = new NetDeviceContainer[nAps + nServ];
     std::vector<NetDeviceContainer> staDevices;
     std::vector<NetDeviceContainer> apDevices;
     
@@ -277,9 +153,8 @@ int main () {
     ip.SetBase("192.168.0.0","255.255.255.0");
     
     stack.Install(apNodes);
-    stack.Install(staUdpNodes);
-    stack.Install(staTcpNodes);
-    stack.Install(servNodes);
+    stack.Install(staNodes);
+    stack.Install(servNode);
     
     Ipv4GlobalRoutingHelper::PopulateRoutingTables();
     csmaAS.SetChannelAttribute("DataRate", StringValue("200Mbps"));
@@ -289,11 +164,10 @@ int main () {
     
     csmaSS.SetChannelAttribute("DataRate", StringValue("500Mbps"));
     csmaSS.EnableAsciiAll(trace.CreateFileStream("Serv2Switch.tr"));
-    csmaDevices[nAps] = csmaSS.Install(NodeContainer(servNodes.Get(0), switchNode));
+    csmaDevices[nAps] = csmaSS.Install(NodeContainer(servNode, switchNode));
     
     // Set the central controller tag (boolean value)
-    centralController = Ptr<CsmaNetDevice>(DynamicCast<CsmaNetDevice>(csmaDevices[nAps].Get(0)));
-    centralController->is_central_controller = true;
+    static Ptr<CsmaNetDevice> centralController = Ptr<CsmaNetDevice>(DynamicCast<CsmaNetDevice>(csmaDevices[nAps].Get(0)));
     
     BridgeHelper switch0;
     NetDeviceContainer switchDev;
@@ -301,9 +175,7 @@ int main () {
         switchDev.Add(csmaDevices[n].Get(1));
     switch0.Install(switchNode, switchDev);
     
-    Ipv4InterfaceContainer serverInterface;
     serverInterface = ip.Assign(csmaDevices[nAps].Get(0));
-    UintegerValue ctsThr = UintegerValue (2200);
     Config::SetDefault ("ns3::WifiRemoteStationManager::FragmentationThreshold", StringValue ("999999"));
     Config::SetDefault ("ns3::WifiRemoteStationManager::RtsCtsThreshold", StringValue ("999999"));
     
@@ -342,10 +214,10 @@ int main () {
         mobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
         mobility.Install (apNodes.Get (n));
         mobility.Install (switchNode);
-        mobility.Install (servNodes.Get(0));
+        mobility.Install (servNode);
         wifiMac.SetType ("ns3::ApWifiMac", "Ssid", SsidValue (ssid));
         
-        //wifiPhy.Set("ChannelNumber", UintegerValue(1 + (n % 3) * 5));
+        wifiPhy.Set("ChannelNumber", UintegerValue(n == 0 ? 1 : 2));
         apDev = wifi.Install(wifiPhy, wifiMac,apNodes.Get(n));
         
         bridgeDev = bridge.Install(apNodes.Get(n), NetDeviceContainer(apDev, csmaDevices[n].Get(0)));
@@ -354,86 +226,65 @@ int main () {
         std::cout << "Ap" << n << ' ' << apInterface.GetAddress(0) << /*" channel "<< 1 + (n % 3) * 5 <<*/ ' ' << apDev.Get(0)->GetAddress() << std::endl;
         
         apDevices.push_back(apDev);
-        apInterfaces.push_back(apInterface);
         SetPosition(apNodes.Get(n), Vector(100 + 10 * n, 1.0, 0.0));
     }
     
-    for(uint32_t n = 0; n < nStas_tcp; n++) {
+    for(uint32_t n = 0; n < nStas; n++) {
         MobilityHelper mobility;
         mobility.SetMobilityModel("ns3::ConstantVelocityMobilityModel");
-        mobility.Install(staTcpNodes.Get(n));
+        mobility.Install(staNodes.Get(n));
         
         wifiMac.SetType("ns3::StaWifiMac",
                 "ActiveProbing", BooleanValue(true),
                 "Ssid", SsidValue(ssid)
         );
-        //wifiPhy.Set("ChannelNumber", UintegerValue(1 + (n % 2) * 5));
-        staDev = wifi.Install(wifiPhy, wifiMac, staTcpNodes.Get(n));
+        wifiPhy.Set("ChannelNumber", UintegerValue(1));//UintegerValue(1 + (n % 2) * 5));
+        staDev = wifi.Install(wifiPhy, wifiMac, staNodes.Get(n));
         staInterface = ip.Assign(staDev);
         std::cout << "Sta" << n << ' ' << staInterface.GetAddress(0) << /*" channel" << 1 + (n % 2) * 5 <<*/ ' ' << staDev.Get(0)->GetAddress() << std::endl;
-        staInterfaces_tcp.push_back(staInterface);
         staDevices.push_back(staDev);
-        SetPosition(staTcpNodes.Get(n), Vector(105, n, 0.0));
-    }
-    
-    for(uint32_t n = 0; n < nStas_udp ; n++) {
-        MobilityHelper mobility;
-        mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
-        mobility.Install(staUdpNodes.Get(n));
-        
-        //if(n < nStas_udp / 2)
-        //    wifiPhy.Set("ChannelNumber", UintegerValue(1 + (0 % 2) * 5));
-        //else
-        //    wifiPhy.Set("ChannelNumber", UintegerValue(1 + (1 % 2) * 5));
-        
-        wifiMac.SetType("ns3::StaWifiMac",
-                "ActiveProbing", BooleanValue(true),
-                "Ssid", SsidValue(ssid)
-        );
-        staDev = wifi.Install(wifiPhy, wifiMac, staUdpNodes.Get(n));
-        staInterface = ip.Assign(staDev);
-        staInterfaces_udp.push_back(staInterface);
-        staDevices.push_back(staDev);
-        
-        SetPosition(staUdpNodes.Get(n), Vector(105.0, n+1, 0.0));
+        SetPosition(staNodes.Get(n), Vector(105, n, 0.0));
     }
     
     SetPosition(switchNode, Vector(150, 100,0));
-    SetPosition(servNodes.Get(0), Vector(150, 150,0));
+    SetPosition(servNode, Vector(150, 150,0));
     
-    Ptr<Socket> tcpSocket[nStas_tcp];
-    Ptr<MyApp> app[nStas_tcp];
+    PacketSinkHelper sinkHelper ("ns3::TcpSocketFactory", InetSocketAddress (Ipv4Address::GetAny (), 9));
+    sinkHelper.Install (servNode);
     
-    PacketSinkHelper packetSinkHelper("ns3::TcpSocketFactory",InetSocketAddress(Ipv4Address::GetAny(),8080));
-    ApplicationContainer sinkApp = packetSinkHelper.Install(staTcpNodes.Get(0));
-    ns3::Ipv4Address recvAddress = staInterfaces_tcp.at(0).GetAddress(0);
-    
-    for(uint32_t n = 1; n < nStas_tcp; n++) {
-        Address sinkAddress(InetSocketAddress(recvAddress, 8080));
-        sinkApp.Start (Seconds (0.0));
-        sinkApp.Stop (Seconds (simulateTime));
-        tcpSocket[n] = Socket::CreateSocket(staTcpNodes.Get(n), TcpSocketFactory::GetTypeId());
-        app[n] = CreateObject<MyApp>();
-        app[n]->Setup(tcpSocket[n], sinkAddress, payloadSize, 100000, DataRate("8Mbps"), staDevices[n].Get(0)->GetObject<WifiNetDevice>(), n, staTcpNodes.Get(n));
-        staTcpNodes.Get (n)->AddApplication(app[n]);
-        app[n]->SetStartTime(Seconds (1.0));
-        app[n]->SetStopTime(Seconds (simulateTime));
+    /* Install TCP/UDP Transmitter on the station */
+    {
+        OnOffHelper server ("ns3::TcpSocketFactory", (InetSocketAddress (serverInterface.GetAddress(0), 9)));
+        server.SetAttribute ("PacketSize", UintegerValue (payloadSize));
+        server.SetAttribute ("OnTime", StringValue ("ns3::ConstantRandomVariable[Constant=1]"));
+        server.SetAttribute ("OffTime", StringValue ("ns3::ConstantRandomVariable[Constant=0]"));
+        server.SetAttribute ("DataRate", DataRateValue (DataRate ("10Mbps")));
+        ApplicationContainer serverApp = server.Install (staNodes.Get(0));
+        serverApp.Start(Seconds(1));
+        serverApp.Stop(Seconds(simulateTime));
     }
-    
-    Config::Connect ("/NodeList/5/DeviceList/*/Phy/State/RxOk", MakeCallback (&PhyRxOkTrace));
+    {
+        OnOffHelper server ("ns3::TcpSocketFactory", (InetSocketAddress (serverInterface.GetAddress(0), 9)));
+        server.SetAttribute ("PacketSize", UintegerValue (payloadSize));
+        server.SetAttribute ("OnTime", StringValue ("ns3::ConstantRandomVariable[Constant=1]"));
+        server.SetAttribute ("OffTime", StringValue ("ns3::ConstantRandomVariable[Constant=0]"));
+        server.SetAttribute ("DataRate", DataRateValue (DataRate ("10Mbps")));
+        ApplicationContainer serverApp = server.Install (staNodes.Get(1));
+        serverApp.Start(Seconds(1));
+        serverApp.Stop(Seconds(simulateTime));
+    }
     
     FlowMonitorHelper flowmon;
     Ptr<FlowMonitor> monitor = flowmon.InstallAll();
     
     ThroughputMonitor(&flowmon, monitor);
-    Simulator::Schedule (Seconds (1.0), &HandOverLvap, Mac48Address::ConvertFrom(staDevices.at(0).Get(0)->GetAddress()), Mac48Address::ConvertFrom(apDevices.at(1).Get(0)->GetAddress()));
+    Simulator::Schedule (Seconds (simulateTime / 2), &Handoff, staNodes.Get(0)->GetId(), apNodes.Get(1)->GetId());
     Simulator::Stop (Seconds (simulateTime));
+    
+    AnimationInterface anim("anim-network.xml");
+    anim.EnablePacketMetadata();
+    
     Simulator::Run ();
     Simulator::Destroy ();
-    
-    std::cout << "Rx bytes: " << rxSize << std::endl;
-    std::cout << "Flow: " << t1 << std::endl;
-    std::cout << "Flow: " << t3 << std::endl;
-    
     return 0;
 }

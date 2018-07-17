@@ -30,6 +30,7 @@
 #include "wifi-mac-queue.h"
 #include "wifi-utils.h"
 #include "ns3/ap-wifi-mac.h"
+#include "ap-wifi-mac.h"
 
 #undef NS_LOG_APPEND_CONTEXT
 #define NS_LOG_APPEND_CONTEXT std::clog << "[mac=" << m_self << "] "
@@ -461,6 +462,7 @@ namespace ns3 {
                     return;
         } else if(!hdr.GetAddr1().IsBroadcast() && ap->sta_lvap_map.find(hdr.GetAddr2()) != ap->sta_lvap_map.end())
             hdr.SetAddr1(m_self);
+        
         if (hdr.IsRts ())
         {
             /* see section 9.2.5.7 802.11-1999
@@ -2248,6 +2250,7 @@ namespace ns3 {
         ack.SetAddr1 (source);
         // 802.11-2012, Section 8.3.1.4:  Duration/ID is received duration value
         // minus the time to transmit the ACK frame and its SIFS interval
+        duration += GetAckDuration (ackTxVector)+GetSifs();
         duration -= GetAckDuration (ackTxVector);
         duration -= GetSifs ();
         NS_ASSERT_MSG (duration.IsPositive (), "Please provide test case to maintainers if this assert is hit.");

@@ -35,10 +35,12 @@ namespace ns3 {
     // <editor-fold desc="LVAP">
     struct LvapState{
         // TODO: FILL THE LIST OF STATE VARIABLES FOR STATION
+        uint16_t aid; // ASSOC ID
         uint8_t channelNumber;
         bool nonErpStation;
         bool nonHtStation;
         Mac48Address lvapAddress;
+        WifiRemoteStation* remSta;
     };
     // </editor-fold>
     
@@ -53,17 +55,16 @@ namespace ns3 {
     {
     public:
         // <editor-fold desc="LVAP">
+        static bool handedOver;
         static bool lvap_mode; // whether app should work with lvaps or in normal mode
         static std::map<Mac48Address, Ptr<ApWifiMac>> ap_objects; // all created ap objects
         static std::map<Mac48Address, Ptr<ApWifiMac>> sta_ap_glb_map; // complete map of stations with aps
         static std::map<Mac48Address, bool> generated_macs; // all generated macs map, format: mac address, is-associated
         std::map<Mac48Address, Mac48Address> sta_lvap_map; // lvap map with sta devices for each ap
         
-        void detach_sta_from_ap(Mac48Address sta_addr, bool disassociate_sta = false);
+        LvapState* detach_sta_from_ap(Mac48Address sta_addr, bool disassociate_sta = false);
         
-        LvapState extract_lvap_state(Mac48Address sta_addr);
-        
-        void attach_lvap_to_ap(Mac48Address sta_addr, LvapState lvap_state);
+        void attach_lvap_to_ap(Mac48Address sta_addr, LvapState* lvap_state);
         
         static Mac48Address GenerateLvap ();
         

@@ -28,6 +28,9 @@
 #include "mac-low.h"
 #include "mac-tx-middle.h"
 #include "src/network/utils/mac48-address.h"
+#include "wifi-mac-header.h"
+#include "ns3/wifi-remote-station-manager.h"
+#include "ns3/ap-wifi-mac.h"
 
 namespace ns3 {
     
@@ -37,6 +40,7 @@ namespace ns3 {
     
     // <editor-fold desc="LVAP">
     bool ApWifiMac::lvap_mode = true;
+    bool ApWifiMac::handedOver = false;
     
     std::map<Mac48Address, Ptr<ApWifiMac>> ApWifiMac::ap_objects;
     std::map<Mac48Address, Ptr<ApWifiMac>> ApWifiMac::sta_ap_glb_map;
@@ -81,40 +85,40 @@ namespace ns3 {
         }
     }
     
-    void ApWifiMac::attach_lvap_to_ap(Mac48Address sta_addr, LvapState lvap_state){
-        uint16_t aid = GetNextAssociationId ();
-        m_staList[aid] = sta_addr;
-        m_sta_revmap[sta_addr] = aid;
+    void ApWifiMac::attach_lvap_to_ap(Mac48Address sta_addr, LvapState* lvap_state){
+        m_staList[lvap_state->aid] = sta_addr; // aid must be unique when more than one sta for each ap
+        m_sta_revmap[sta_addr] = lvap_state->aid;
         
-        if(lvap_state.nonErpStation){
+        if(lvap_state->nonErpStation){
             m_nonErpStations.push_back (sta_addr);
             m_nonErpStations.unique ();
         }
-        if(lvap_state.nonHtStation){
+        if(lvap_state->nonHtStation){
             m_nonHtStations.push_back (sta_addr);
             m_nonHtStations.unique ();
         }
         
-        sta_lvap_map[sta_addr] = lvap_state.lvapAddress;
-        //lvap_sta_map[lvap_state.lvapAddress] = sta_addr;
+        sta_lvap_map[sta_addr] = lvap_state->lvapAddress;
         sta_ap_glb_map[sta_addr] = Ptr<ApWifiMac>(this);
-        
-        if(lvap_state.channelNumber != m_phy->GetChannelNumber()){
-            // send channel switch announcement
-        }
+        m_stationManager->InsertSta(lvap_state->remSta);
         
         SetBeaconGeneration(true);
     }
     
-    void ApWifiMac::detach_sta_from_ap(Mac48Address sta_addr, bool disassociate_sta){
+    LvapState* ApWifiMac::detach_sta_from_ap(Mac48Address sta_addr, bool disassociate_sta){
+        LvapState* state = new LvapState();
+        state->aid = m_sta_revmap[sta_addr];
+        
         for (std::list<Mac48Address>::const_iterator j = m_nonErpStations.begin (); j != m_nonErpStations.end (); j++)
             if (*j == sta_addr){
+                state->nonErpStation = true;
                 m_nonErpStations.erase (j);
                 break;
             }
         
         for (std::list<Mac48Address>::const_iterator j = m_nonHtStations.begin (); j != m_nonHtStations.end (); j++)
             if (*j == sta_addr){
+                state->nonHtStation = true;
                 m_nonHtStations.erase (j);
                 break;
             }
@@ -122,13 +126,19 @@ namespace ns3 {
         // remove from the station from ap's staList
         for (std::map<uint16_t, Mac48Address>::const_iterator j = m_staList.begin (); j != m_staList.end (); j++)
             if (j->second == sta_addr){
-                m_staList.erase (j);
                 m_sta_revmap.erase(m_sta_revmap.find(j->second));
+                m_staList.erase (j);
                 break;
-            }        
+            }
+        
+        state->channelNumber = m_phy->GetChannelNumber();
+        state->lvapAddress = sta_lvap_map.find(sta_addr)->second;
+        state->remSta = m_stationManager->RemoveRemoteSta(sta_addr);
+        
         // completely remove the lvap and sta from the network (pure disassociation)
         if(disassociate_sta)
             generated_macs[sta_addr] = false;
+        
         // release the lvap from this ap
         std::map<Mac48Address, Mac48Address>::iterator sta_lvap_iter = sta_lvap_map.find(sta_addr);
         sta_lvap_map.erase(sta_lvap_iter);
@@ -136,27 +146,7 @@ namespace ns3 {
         // release sta from this ap
         sta_ap_glb_map.erase(sta_ap_glb_map.find(sta_addr));
         // finally detach station from ap
-        m_stationManager->RecordDisassociated (sta_addr);
-    }
-    
-    LvapState ApWifiMac::extract_lvap_state(Mac48Address sta_addr){
-        LvapState state;
-        
-        // start collecting lvaps state
-        for (std::list<Mac48Address>::const_iterator j = m_nonErpStations.begin (); j != m_nonErpStations.end (); j++)
-            if (*j == sta_addr){
-                state.nonErpStation = true;
-                break;
-            }
-        
-        for (std::list<Mac48Address>::const_iterator j = m_nonHtStations.begin (); j != m_nonHtStations.end (); j++)
-            if (*j == sta_addr){
-                state.nonHtStation = true;
-                break;
-            }
-        
-        state.channelNumber = m_phy->GetChannelNumber();
-        state.lvapAddress = sta_lvap_map.find(sta_addr)->second;
+        //m_stationManager->RecordDisassociated (sta_addr);
         
         return state;
     }
@@ -1164,6 +1154,7 @@ namespace ns3 {
     {
         NS_LOG_FUNCTION (this << packet << hdr);
         Mac48Address from = hdr->GetAddr2 ();
+        
         if (hdr->IsData ())
         {
             Mac48Address bssid = hdr->GetAddr1 ();
@@ -1173,10 +1164,6 @@ namespace ns3 {
                     && m_stationManager->IsAssociated (from))
             {
                 Mac48Address to = hdr->GetAddr3 ();
-                //std::cout << "DATA PCK TO " << to << " FROM " << from << std::endl;
-                // TODO: RECV PACKET PRINTING
-                //std::cout << "DATA PCK FROM ASSOCIATED DEVICE " << from << " TO " << to << std::endl;
-                //std::cout << *hdr << std::endl;
                 if (to == GetAddress ())
                 {
                     NS_LOG_DEBUG ("frame for me from=" << from);
@@ -1436,6 +1423,7 @@ namespace ns3 {
                 }
                 else if (hdr->IsReassocReq ())
                 {
+                    std::cout << "REASSOC REQ" << std::endl;
                     NS_LOG_DEBUG ("Reassociation request received from " << from);
                     //first, verify that the the station's supported
                     //rate set is compatible with our Basic Rate set

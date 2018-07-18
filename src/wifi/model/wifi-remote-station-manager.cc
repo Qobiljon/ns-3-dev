@@ -312,6 +312,18 @@ namespace ns3 {
     
     NS_OBJECT_ENSURE_REGISTERED (WifiRemoteStationManager);
     
+    struct ArfWifiRemoteStation : public WifiRemoteStation
+    {
+        uint32_t m_timer; ///< timer value
+        uint32_t m_success; ///< success count
+        uint32_t m_failed; ///< failed count
+        bool m_recovery; ///< recovery
+        uint32_t m_retry; ///< retry count
+        uint32_t m_timerTimeout; ///< timer timeout
+        uint32_t m_successThreshold; ///< success threshold
+        uint8_t m_rate; ///< rate
+    };
+    
     void WifiRemoteStationManager::InsertSta(WifiRemoteStation* remoteSta){
         const_cast<WifiRemoteStationManager *> (this)->m_stations.push_back(remoteSta);
         const_cast<WifiRemoteStationManager *> (this)->m_states.push_back(remoteSta->m_state);
@@ -369,8 +381,19 @@ namespace ns3 {
                 remSta->m_tid = (*sta_iter)->m_tid;
                 remSta->m_state = remStaState;
                 
+                ArfWifiRemoteStation* arfSta = dynamic_cast<ArfWifiRemoteStation*>(remSta);
+                ArfWifiRemoteStation* arfOrigSta = dynamic_cast<ArfWifiRemoteStation*>(*sta_iter);
+                arfSta->m_failed = arfOrigSta->m_failed;
+                arfSta->m_rate = arfOrigSta->m_rate;
+                arfSta->m_recovery = arfOrigSta->m_recovery;
+                arfSta->m_retry = arfOrigSta->m_retry;
+                arfSta->m_success = arfOrigSta->m_success;
+                arfSta->m_successThreshold = arfOrigSta->m_successThreshold;
+                arfSta->m_timer = arfOrigSta->m_timer;
+                arfSta->m_timerTimeout = arfOrigSta->m_timerTimeout;
+                
                 //delete (*sta_iter);
-                return remSta;
+                return arfSta;
             }
         RecordDisassociated(address);
         return nullptr;
@@ -1067,15 +1090,15 @@ namespace ns3 {
         }
         
         return WifiTxVector (defaultMode,
-                GetDefaultTxPowerLevel (),
-                defaultPreamble,
-                ConvertGuardIntervalToNanoSeconds (defaultMode, m_wifiPhy->GetShortGuardInterval (), m_wifiPhy->GetGuardInterval ()),
-                GetNumberOfAntennas (),
-                GetMaxNumberOfTransmitStreams (),
-                0,
-                GetChannelWidthForTransmission (defaultMode, m_wifiPhy->GetChannelWidth ()),
-                false,
-                false);
+        GetDefaultTxPowerLevel (),
+        defaultPreamble,
+        ConvertGuardIntervalToNanoSeconds (defaultMode, m_wifiPhy->GetShortGuardInterval (), m_wifiPhy->GetGuardInterval ()),
+        GetNumberOfAntennas (),
+        GetMaxNumberOfTransmitStreams (),
+        0,
+        GetChannelWidthForTransmission (defaultMode, m_wifiPhy->GetChannelWidth ()),
+        false,
+        false);
     }
     
     WifiTxVector

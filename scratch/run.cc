@@ -126,10 +126,10 @@ int main () {
     ApWifiMac::lvap_mode = true;
     
     uint32_t payloadSize = 1472;
-    double simulateTime = 4.0;
+    double simulateTime = 20.0;
     AsciiTraceHelper trace;
-    uint32_t nAps = 2;
-    uint32_t nStas = 2;
+    uint32_t nAps = 4;
+    uint32_t nStas = 4;
     uint32_t nServ = 1;
     NodeContainer apNodes;
     NodeContainer staNodes;
@@ -195,7 +195,7 @@ int main () {
     YansWifiPhyHelper wifiPhy = YansWifiPhyHelper::Default();
     wifiPhy.SetChannel (wifiChannel.Create ());
     
-    std::cout << "Server: " << serverInterface.GetAddress(0) << std::endl;
+    std::cout << "Server: " << serverInterface.GetAddress(0) << ' ' << Mac48Address::ConvertFrom(centralController->GetAddress()) << std::endl;
     for(uint32_t n = 0; n < nAps; n++) {
         MobilityHelper mobility;
         NetDeviceContainer bridgeDev;
@@ -217,13 +217,13 @@ int main () {
         mobility.Install (servNode);
         wifiMac.SetType ("ns3::ApWifiMac", "Ssid", SsidValue (ssid));
         
-        wifiPhy.Set("ChannelNumber", UintegerValue(n == 0 ? 1 : 2));
+        wifiPhy.Set("ChannelNumber", UintegerValue(n+1));
         apDev = wifi.Install(wifiPhy, wifiMac,apNodes.Get(n));
         
         bridgeDev = bridge.Install(apNodes.Get(n), NetDeviceContainer(apDev, csmaDevices[n].Get(0)));
         
         apInterface = ip.Assign(apDev);
-        std::cout << "Ap" << n << ' ' << apInterface.GetAddress(0) << /*" channel "<< 1 + (n % 3) * 5 <<*/ ' ' << apDev.Get(0)->GetAddress() << std::endl;
+        std::cout << "Ap" << n << ' ' << apInterface.GetAddress(0) << /*" channel "<< 1 + (n % 3) * 5 <<*/ ' ' << Mac48Address::ConvertFrom(apDev.Get(0)->GetAddress()) << std::endl;
         
         apDevices.push_back(apDev);
         SetPosition(apNodes.Get(n), Vector(100 + 10 * n, 1.0, 0.0));
@@ -241,7 +241,7 @@ int main () {
         wifiPhy.Set("ChannelNumber", UintegerValue(1));//UintegerValue(1 + (n % 2) * 5));
         staDev = wifi.Install(wifiPhy, wifiMac, staNodes.Get(n));
         staInterface = ip.Assign(staDev);
-        std::cout << "Sta" << n << ' ' << staInterface.GetAddress(0) << /*" channel" << 1 + (n % 2) * 5 <<*/ ' ' << staDev.Get(0)->GetAddress() << std::endl;
+        std::cout << "Sta" << n << ' ' << staInterface.GetAddress(0) << /*" channel" << 1 + (n % 2) * 5 <<*/ ' ' << Mac48Address::ConvertFrom(staDev.Get(0)->GetAddress()) << std::endl;
         staDevices.push_back(staDev);
         SetPosition(staNodes.Get(n), Vector(105, n, 0.0));
     }
@@ -253,24 +253,15 @@ int main () {
     sinkHelper.Install (servNode);
     
     /* Install TCP/UDP Transmitter on the station */
+    for(uint32_t n = 0; n < nStas; n++)
     {
         OnOffHelper server ("ns3::TcpSocketFactory", (InetSocketAddress (serverInterface.GetAddress(0), 9)));
         server.SetAttribute ("PacketSize", UintegerValue (payloadSize));
         server.SetAttribute ("OnTime", StringValue ("ns3::ConstantRandomVariable[Constant=1]"));
         server.SetAttribute ("OffTime", StringValue ("ns3::ConstantRandomVariable[Constant=0]"));
         server.SetAttribute ("DataRate", DataRateValue (DataRate ("10Mbps")));
-        ApplicationContainer serverApp = server.Install (staNodes.Get(0));
-        serverApp.Start(Seconds(1));
-        serverApp.Stop(Seconds(simulateTime));
-    }
-    {
-        OnOffHelper server ("ns3::TcpSocketFactory", (InetSocketAddress (serverInterface.GetAddress(0), 9)));
-        server.SetAttribute ("PacketSize", UintegerValue (payloadSize));
-        server.SetAttribute ("OnTime", StringValue ("ns3::ConstantRandomVariable[Constant=1]"));
-        server.SetAttribute ("OffTime", StringValue ("ns3::ConstantRandomVariable[Constant=0]"));
-        server.SetAttribute ("DataRate", DataRateValue (DataRate ("10Mbps")));
-        ApplicationContainer serverApp = server.Install (staNodes.Get(1));
-        serverApp.Start(Seconds(1));
+        ApplicationContainer serverApp = server.Install (staNodes.Get(n));
+        serverApp.Start(Seconds(0.5));
         serverApp.Stop(Seconds(simulateTime));
     }
     
@@ -278,7 +269,9 @@ int main () {
     Ptr<FlowMonitor> monitor = flowmon.InstallAll();
     
     ThroughputMonitor(&flowmon, monitor);
-    Simulator::Schedule (Seconds (simulateTime / 2), &Handoff, staNodes.Get(0)->GetId(), apNodes.Get(1)->GetId());
+    Simulator::Schedule (Seconds (5), &Handoff, staNodes.Get(1)->GetId(), apNodes.Get(1)->GetId());
+    Simulator::Schedule (Seconds (8), &Handoff, staNodes.Get(2)->GetId(), apNodes.Get(2)->GetId());
+    Simulator::Schedule (Seconds (12), &Handoff, staNodes.Get(3)->GetId(), apNodes.Get(3)->GetId());
     Simulator::Stop (Seconds (simulateTime));
     
     AnimationInterface anim("anim-network.xml");
